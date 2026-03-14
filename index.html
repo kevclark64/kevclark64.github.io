@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>1553 Succession Crisis Simulation</title>
+<style>
+body{font-family:Arial;margin:20px}
+.grid{
+display:grid;
+grid-template-columns:repeat(20,22px);
+gap:1px;
+margin-top:10px
+}
+.cell{
+width:22px;
+height:22px
+}
+.jane{background:royalblue}
+.mary{background:crimson}
+.neutral{background:lightgray}
+.london{border-top:3px solid black}
+.east{border-bottom:3px solid green}
+.council{outline:2px solid gold}
+</style>
+</head>
+<body>
+<h2>Jane vs Mary Succession Crisis Simulation</h2>
+<b>Initial Conditions</b><br>
+<label>Jane starting %
+<input id="janeStart" type="number" value="80"></label><br>
+<label>Mary starting %
+<input id="maryStart" type="number" value="10"></label><br>
+<label>Neutral %
+<input id="neutralStart" type="number" value="10"></label><br><br>
+
+<label>Jane legitimacy (0-100)
+<input id="janeLegit" type="number" value="40"></label><br>
+<label>Mary legitimacy (0-100)
+<input id="maryLegit" type="number" value="70"></label><br><br>
+
+<label>Protestant attachment strength (higher → favors Jane)
+<input id="protestantAttachment" type="number" value="50"></label><br>
+<label>Execution risk if back Jane & she loses (%)
+<input id="riskJaneLose" type="number" value="80"></label><br>
+<label>Execution risk if back Mary & she loses (%)
+<input id="riskMaryLose" type="number" value="30"></label><br>
+<label>Regional influence strength
+<input id="regionEffect" type="number" value="15"></label><br><br>
+
+<label>Privy Council loyalty (%)
+<input id="councilLoyalty" type="number" value="60"></label><br>
+<label>
+<input type="checkbox" id="northumberland">
+Northumberland stays in London (boosts Jane)
+</label><br><br>
+
+<label>Monte Carlo runs (for bulk simulation)
+<input id="runs" type="number" value="100"></label><br><br>
+
+<button onclick="runMonteCarlo()">Run Many Simulations</button>
+<button onclick="startStepMode()">Start Day-by-Day Simulation</button>
+<button onclick="nextDay()">Next Day</button>
+<p id="dayLabel"></p>
+<p id="probLabel" style="font-weight:bold;color:#006400"></p>
+<p id="results"></p>
+<div class="grid" id="board"></div>
+
+<script>
+const SIZE=400
+const WIDTH=20
+const COUNCIL_SIZE=12
+const DAYS=[
+"July 10","July 11","July 12","July 13","July 14",
+"July 15","July 16","July 17","July 18","July 19"
+]
+let board=[]
+let council=[]
+let currentDay=0
+let params
+let currentProb = 50
+
+function zoneOf(i){
+  let row=Math.floor(i/WIDTH)
+  if(row<6) return "london"
+  if(row<13) return "rest"
+  return "east"
+}
+
+function randomChoice(p){return Math.random()<p}
+
+function initBoard(janeP,maryP){
+  let b=[]
+  for(let i=0;i<SIZE;i++){
+    let r=Math.random()
+    if(r<janeP) b.push("jane")
+    else if(r<janeP+maryP) b.push("mary")
+    else b.push("neutral")
+  }
+  council=[]
+  while(council.length<COUNCIL_SIZE){
+    let idx=Math.floor(Math.random()*SIZE)
+    if(!council.includes(idx)){
+      council.push(idx)
+      b[idx]="jane"
+    }
+  }
+  return b
+}
+
+function estimateWinProbability(currentBoard, numSims=50){
+  let janeWins = 0
+  for(let s=0; s<numSims; s++){
+    let testBoard = [...currentBoard]
+    for(let d=0; d<(9-currentDay); d++){
+      testBoard = simulateTurn(testBoard, params)
+    }
+    let jane = testBoard.filter(x=>x=="jane").length
+    let mary = testBoard.filter(x=>x=="mary").length
+    if(jane > mary) janeWins++
+  }
+  return Math.round((janeWins / numSims) * 100)
+}
+
+function simulateTurn(board,params){
+  let janeCount=board.filter(x=>x=="jane").length
+  let maryCount=board.filter(x=>x=="mary").length
+  let total=board.length
+
+  let janeStrength = (janeCount/total)*100 + params.janeLegit
+  let maryStrength = (maryCount/total)*100 + params.maryLegit
+
+  janeStrength += params.protestantAttachment / 5
+  if(params.northumberland) janeStrength += 10
+
+  let cascade = 0
+  if(maryCount/total > .40) cascade = .15
+
+  let newBoard = [...board]
+
+  for(let i=0;i<SIZE;i++){
+    let zone = zoneOf(i)
+    let isCouncil = council.includes(i)
+    let zoneJane = 0
+    let zoneMary = 0
+    if(zone=="london") zoneJane = params.regionEffect
+    if(zone=="east") zoneMary = params.regionEffect
+
+    // NEW: Neighbor influence (contagion from adjacent cells)
+    let neighbors = []
+    let x = i % WIDTH
+    let y = Math.floor(i / WIDTH)
+    if (y > 0) neighbors.push(board[i - WIDTH])     // up
+    if (y < WIDTH-1) neighbors.push(board[i + WIDTH]) // down
+    if (x > 0) neighbors.push(board[i - 1])         // left
+    if (x < WIDTH-1) neighbors.push(board[i + 1])   // right
+
+    let janeNeighbors = neighbors.filter(n => n === "jane").length
+    let maryNeighbors = neighbors.filter(n => n === "mary").length
+    let totalNeighbors = neighbors.length
+
+    let localBias = 0
+    if (totalNeighbors > 0) {
+      let localJaneRatio = janeNeighbors / totalNeighbors
+      let localMaryRatio = maryNeighbors / totalNeighbors
+      localBias = (localMaryRatio - localJaneRatio) * 0.15  // positive → easier to switch toward Mary
+    }
+
+    if(board[i]=="neutral"){
+      let pMary = (maryStrength + zoneMary) / (maryStrength + janeStrength + zoneJane + zoneMary)
+      pMary += localBias * 0.5  // neutrals more sensitive to neighbors
+      pMary = Math.max(0, Math.min(1, pMary))
+      newBoard[i] = randomChoice(pMary) ? "mary" : "jane"
+    }
+    else if(board[i]=="jane"){
+      let switchChance = (maryStrength + zoneMary - (janeStrength + zoneJane)) / 200
+      switchChance += cascade
+      switchChance += params.riskJaneLose / 200
+      switchChance -= params.protestantAttachment / 400
+      switchChance += localBias  // neighbors pull toward majority
+      if(isCouncil) switchChance *= (100 - params.councilLoyalty)/100
+      if(!params.northumberland) switchChance += .05
+
+      if(switchChance > 0 && randomChoice(switchChance))
+        newBoard[i] = "mary"
+    }
+    else if(board[i]=="mary"){
+      let switchChance = (janeStrength + zoneJane - (maryStrength + zoneMary)) / 200
+      switchChance += params.riskMaryLose / 200
+      switchChance -= localBias  // negative localBias (more Jane neighbors) makes it harder to leave Mary
+
+      if(switchChance > 0 && randomChoice(switchChance))
+        newBoard[i] = "jane"
+    }
+  }
+  return newBoard
+}
+
+function drawBoard(board){
+  let grid = document.getElementById("board")
+  grid.innerHTML = ""
+  board.forEach((cell,i)=>{
+    let div = document.createElement("div")
+    div.classList.add("cell",cell)
+    let zone = zoneOf(i)
+    if(zone=="london") div.classList.add("london")
+    if(zone=="east") div.classList.add("east")
+    if(council.includes(i)) div.classList.add("council")
+    grid.appendChild(div)
+  })
+}
+
+function readParams(){
+  return {
+    janeStart: document.getElementById("janeStart").value/100,
+    maryStart: document.getElementById("maryStart").value/100,
+    janeLegit: Number(document.getElementById("janeLegit").value),
+    maryLegit: Number(document.getElementById("maryLegit").value),
+    protestantAttachment: Number(document.getElementById("protestantAttachment").value),
+    riskJaneLose: Number(document.getElementById("riskJaneLose").value),
+    riskMaryLose: Number(document.getElementById("riskMaryLose").value),
+    regionEffect: Number(document.getElementById("regionEffect").value),
+    councilLoyalty: Number(document.getElementById("councilLoyalty").value),
+    northumberland: document.getElementById("northumberland").checked
+  }
+}
+
+function runMonteCarlo(){
+  params = readParams()
+  let runs = Number(document.getElementById("runs").value)
+  let janeWins=0, maryWins=0
+  for(let r=0;r<runs;r++){
+    let b = initBoard(params.janeStart, params.maryStart)
+    for(let d=0;d<9;d++) b = simulateTurn(b, params)
+    let jane = b.filter(x=>x=="jane").length
+    let mary = b.filter(x=>x=="mary").length
+    if(jane > mary) janeWins++
+    else maryWins++
+  }
+  document.getElementById("results").innerText =
+    "Jane wins: " + janeWins + " | Mary wins: " + maryWins + " (out of " + runs + ")"
+}
+
+function startStepMode(){
+  params = readParams()
+  board = initBoard(params.janeStart, params.maryStart)
+  currentDay = 0
+  currentProb = estimateWinProbability(board)
+  updateDisplay()
+}
+
+function nextDay(){
+  if(currentDay >= 9) return
+  board = simulateTurn(board, params)
+  currentDay++
+  currentProb = estimateWinProbability(board)
+  updateDisplay()
+}
+
+function updateDisplay(){
+  drawBoard(board)
+  document.getElementById("dayLabel").innerText = "Current Day: " + DAYS[currentDay]
+  
+  document.getElementById("probLabel").innerHTML = 
+    `Jane win probability: <span style="color:#006400">${currentProb}%</span> | ` +
+    `Mary win probability: <span style="color:#8B0000">${100 - currentProb}%</span>`
+
+  let jane = board.filter(x=>x=="jane").length
+  let mary = board.filter(x=>x=="mary").length
+  let neutral = board.filter(x=>x=="neutral").length
+  document.getElementById("results").innerText =
+    "Jane: " + jane + " | Mary: " + mary + " | Neutral: " + neutral
+}
+</script>
+</body>
+</html>
